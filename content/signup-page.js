@@ -456,9 +456,26 @@ async function step5_fillNameBirthday(payload) {
   log(`Step 5: Name filled: ${fullName}`);
 
   let birthdayMode = false;
+  let dropdownMode = false;
+  let dropdownButtons = [];
   let ageInput = null;
 
   for (let i = 0; i < 100; i++) {
+    // Check for React Aria Select dropdowns (new UI with should_use_birthday_dropdowns)
+    const bdayFieldset = Array.from(document.querySelectorAll('fieldset')).find(fs => {
+      const legend = fs.querySelector('legend');
+      return legend && /生日|birthday|date\s+of\s+birth/i.test(legend.textContent);
+    });
+    if (bdayFieldset) {
+      const selectBtns = bdayFieldset.querySelectorAll('button[aria-haspopup="listbox"]');
+      if (selectBtns.length >= 3) {
+        dropdownMode = true;
+        dropdownButtons = Array.from(selectBtns);
+        break;
+      }
+    }
+
+    // Check for React Aria DateField spin buttons (older UI)
     const yearSpinner = document.querySelector('[role="spinbutton"][data-type="year"]');
     const monthSpinner = document.querySelector('[role="spinbutton"][data-type="month"]');
     const daySpinner = document.querySelector('[role="spinbutton"][data-type="day"]');
@@ -476,7 +493,63 @@ async function step5_fillNameBirthday(payload) {
     await sleep(100);
   }
 
-  if (birthdayMode) {
+  if (dropdownMode) {
+    // New UI: React Aria Select dropdowns for year / month / day
+    if (!hasBirthdayData) {
+      throw new Error('Birthday dropdowns detected, but no birthday data provided.');
+    }
+
+    log('Step 5: Birthday dropdowns detected, filling via click-through...');
+
+    async function selectDropdownOption(button, value) {
+      // Click the button to open the listbox popup
+      simulateClick(button);
+      await sleep(400);
+
+      // Wait for the listbox to appear (rendered as a portal)
+      const listbox = await waitForElement('[role="listbox"]', 3000);
+      await sleep(200);
+
+      // Find the option matching the desired value
+      const options = listbox.querySelectorAll('[role="option"]');
+      let target = null;
+      for (const opt of options) {
+        const optKey = opt.getAttribute('data-key');
+        const optText = (opt.textContent || '').trim();
+        if (optKey === String(value) || optText === String(value)) {
+          target = opt;
+          break;
+        }
+      }
+      if (!target) {
+        // Close the listbox before throwing
+        button.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true }));
+        throw new Error(`Could not find dropdown option for value "${value}".`);
+      }
+
+      await humanPause(150, 350);
+      simulateClick(target);
+      await sleep(300);
+    }
+
+    const [yearBtn, monthBtn, dayBtn] = dropdownButtons;
+
+    await humanPause(450, 1100);
+    await selectDropdownOption(yearBtn, year);
+    await humanPause(250, 650);
+    await selectDropdownOption(monthBtn, month);
+    await humanPause(250, 650);
+    await selectDropdownOption(dayBtn, day);
+    log(`Step 5: Birthday filled: ${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`);
+
+    // Keep hidden birthday input in sync
+    const hiddenBirthday = document.querySelector('input[name="birthday"]');
+    if (hiddenBirthday) {
+      const dateStr = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+      fillInput(hiddenBirthday, dateStr);
+      log(`Step 5: Hidden birthday input synced: ${dateStr}`);
+    }
+  } else if (birthdayMode) {
     if (!hasBirthdayData) {
       throw new Error('Birthday field detected, but no birthday data provided.');
     }
@@ -486,25 +559,25 @@ async function step5_fillNameBirthday(payload) {
     const daySpinner = document.querySelector('[role="spinbutton"][data-type="day"]');
 
     if (yearSpinner && monthSpinner && daySpinner) {
-      log('Step 5: Birthday fields detected, filling birthday...');
+      log('Step 5: Birthday spin buttons detected, filling birthday...');
 
       async function setSpinButton(el, value) {
+        simulateClick(el);
+        await sleep(200);
         el.focus();
-        await sleep(100);
-        document.execCommand('selectAll', false, null);
-        await sleep(50);
+        await sleep(150);
 
         const valueStr = String(value);
         for (const char of valueStr) {
           el.dispatchEvent(new KeyboardEvent('keydown', { key: char, code: `Digit${char}`, bubbles: true }));
-          el.dispatchEvent(new KeyboardEvent('keypress', { key: char, code: `Digit${char}`, bubbles: true }));
-          el.dispatchEvent(new InputEvent('beforeinput', { inputType: 'insertText', data: char, bubbles: true }));
-          el.dispatchEvent(new InputEvent('input', { inputType: 'insertText', data: char, bubbles: true }));
           await sleep(50);
+          el.dispatchEvent(new KeyboardEvent('keypress', { key: char, code: `Digit${char}`, bubbles: true }));
+          await sleep(50);
+          el.dispatchEvent(new KeyboardEvent('keyup', { key: char, code: `Digit${char}`, bubbles: true }));
+          await sleep(80);
         }
 
-        el.dispatchEvent(new KeyboardEvent('keyup', { key: 'Tab', code: 'Tab', bubbles: true }));
-        el.blur();
+        el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', code: 'Tab', bubbles: true }));
         await sleep(100);
       }
 
@@ -520,8 +593,7 @@ async function step5_fillNameBirthday(payload) {
     const hiddenBirthday = document.querySelector('input[name="birthday"]');
     if (hiddenBirthday) {
       const dateStr = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-      hiddenBirthday.value = dateStr;
-      hiddenBirthday.dispatchEvent(new Event('change', { bubbles: true }));
+      fillInput(hiddenBirthday, dateStr);
       log(`Step 5: Hidden birthday input set: ${dateStr}`);
     }
   } else if (ageInput) {
@@ -537,8 +609,7 @@ async function step5_fillNameBirthday(payload) {
     const hiddenBirthday = document.querySelector('input[name="birthday"]');
     if (hiddenBirthday && hasBirthdayData) {
       const dateStr = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-      hiddenBirthday.value = dateStr;
-      hiddenBirthday.dispatchEvent(new Event('change', { bubbles: true }));
+      fillInput(hiddenBirthday, dateStr);
       log(`Step 5: Hidden birthday input set (age mode): ${dateStr}`);
     }
   } else {
