@@ -46,7 +46,21 @@
     <div class="data-card">
       <div class="data-row">
         <span class="data-label">VPS</span>
-        <input type="password" id="input-vps-url" class="data-input" placeholder="http://127.0.0.1:5174/#/oauth" />
+        <div class="data-inline">
+          <input type="text" id="input-vps-url" class="data-input" value="http://127.0.0.1:5173/#/oauth" />
+          <button id="btn-toggle-vps" class="btn btn-outline btn-sm btn-icon" type="button" title="Hide VPS URL" aria-label="Hide VPS URL">
+            <svg class="icon-eye" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8S1 12 1 12z"/>
+              <circle cx="12" cy="12" r="3"/>
+            </svg>
+            <svg class="icon-eye-off" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M17.94 17.94A10.94 10.94 0 0 1 12 20C5 20 1 12 1 12a21.77 21.77 0 0 1 5.06-7.94"/>
+              <path d="M9.9 4.24A10.94 10.94 0 0 1 12 4c7 0 11 8 11 8a21.8 21.8 0 0 1-4.17 5.94"/>
+              <path d="M14.12 14.12a3 3 0 1 1-4.24-4.24"/>
+              <line x1="1" y1="1" x2="23" y2="23"/>
+            </svg>
+          </button>
+        </div>
       </div>
       <div class="data-row">
         <span class="data-label">Mail</span>
@@ -88,7 +102,10 @@
 
   <section id="steps-section">
     <div class="steps-header">
-      <span class="section-label">Workflow</span>
+      <div class="steps-title-group">
+        <span class="section-label">Workflow</span>
+        <button id="btn-workflow-continue" class="btn btn-workflow-continue btn-xs" type="button" title="Continue from interrupted step" disabled>Continue</button>
+      </div>
       <span id="steps-progress" class="steps-progress">0 / 9</span>
     </div>
     <div class="steps-list">

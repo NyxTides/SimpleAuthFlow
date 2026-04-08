@@ -17,10 +17,12 @@ const inputEmail = document.getElementById('input-email');
 const inputPassword = document.getElementById('input-password');
 const btnFetchEmail = document.getElementById('btn-fetch-email');
 const btnTogglePassword = document.getElementById('btn-toggle-password');
+const btnToggleVps = document.getElementById('btn-toggle-vps');
 const btnStop = document.getElementById('btn-stop');
 const btnReset = document.getElementById('btn-reset');
 const stepsProgress = document.getElementById('steps-progress');
 const btnAutoRun = document.getElementById('btn-auto-run');
+const btnWorkflowContinue = document.getElementById('btn-workflow-continue');
 const btnAutoContinue = document.getElementById('btn-auto-continue');
 const autoContinueBar = document.getElementById('auto-continue-bar');
 const autoContinueHint = document.getElementById('auto-continue-hint');
@@ -28,6 +30,7 @@ const btnClearLog = document.getElementById('btn-clear-log');
 const inputVpsUrl = document.getElementById('input-vps-url');
 const inputRunCount = document.getElementById('input-run-count');
 let autoContinueMode = 'email';
+const DEFAULT_VPS_URL = 'http://127.0.0.1:5173/#/oauth';
 
 // ============================================================
 // Toast Notifications
@@ -81,9 +84,7 @@ async function restoreState() {
       inputEmail.value = state.email;
     }
     syncPasswordField(state);
-    if (state.vpsUrl) {
-      inputVpsUrl.value = state.vpsUrl;
-    }
+    inputVpsUrl.value = state.vpsUrl || DEFAULT_VPS_URL;
 
     if (state.stepStatuses) {
       for (const [step, status] of Object.entries(state.stepStatuses)) {
@@ -106,6 +107,13 @@ async function restoreState() {
 
 function syncPasswordField(state) {
   inputPassword.value = state.customPassword || state.password || '';
+}
+
+function syncVpsToggleLabel() {
+  const hidden = inputVpsUrl.type === 'password';
+  btnToggleVps.classList.toggle('is-hidden', hidden);
+  btnToggleVps.title = hidden ? 'Show VPS URL' : 'Hide VPS URL';
+  btnToggleVps.setAttribute('aria-label', hidden ? 'Show VPS URL' : 'Hide VPS URL');
 }
 
 // ============================================================
@@ -149,23 +157,61 @@ function updateButtonStates() {
   for (let step = 1; step <= 9; step++) {
     const btn = document.querySelector(`.step-btn[data-step="${step}"]`);
     if (!btn) continue;
-
-    if (anyRunning) {
-      btn.disabled = true;
-    } else if (step === 1) {
-      btn.disabled = false;
-    } else {
-      const prevStatus = statuses[step - 1];
-      const currentStatus = statuses[step];
-      btn.disabled = !(prevStatus === 'completed' || currentStatus === 'failed' || currentStatus === 'completed' || currentStatus === 'stopped');
-    }
+    btn.disabled = anyRunning;
   }
 
+  btnWorkflowContinue.disabled = anyRunning || getResumableStepFromStatuses(statuses) === null;
   updateStopButtonState(anyRunning || autoContinueBar.style.display !== 'none');
 }
 
+function getResumableStepFromStatuses(statuses, currentStep = null) {
+  const normalized = {};
+  for (let step = 1; step <= 9; step++) {
+    normalized[step] = statuses[step] || 'pending';
+  }
+
+  const allPending = Object.values(normalized).every((status) => status === 'pending');
+  if (allPending) {
+    return null;
+  }
+
+  const highestCompleted = Object.entries(normalized)
+    .filter(([, status]) => status === 'completed')
+    .map(([step]) => Number(step))
+    .sort((a, b) => b - a)[0] || 0;
+
+  if (highestCompleted >= 9) {
+    return null;
+  }
+
+  if (highestCompleted > 0) {
+    return highestCompleted + 1;
+  }
+
+  const resolvedCurrentStep = Number(currentStep) || 0;
+  if (resolvedCurrentStep && ['failed', 'stopped', 'running'].includes(normalized[resolvedCurrentStep])) {
+    return resolvedCurrentStep;
+  }
+
+  for (let step = 1; step <= 9; step++) {
+    if (normalized[step] !== 'completed') {
+      return step;
+    }
+  }
+
+  return null;
+}
+
+async function refreshContinueButton() {
+  try {
+    const state = await chrome.runtime.sendMessage({ type: 'GET_STATE', source: 'sidepanel' });
+    btnWorkflowContinue.disabled = Boolean(state.autoRunning)
+      || getResumableStepFromStatuses(state.stepStatuses || {}, state.currentStep) === null;
+  } catch {}
+}
+
 function updateStopButtonState(active) {
-  btnStop.disabled = !active;
+  btnStop.disabled = false;
 }
 
 function updateStatusDisplay(state) {
@@ -286,6 +332,22 @@ function syncPasswordToggleLabel() {
   btnTogglePassword.textContent = inputPassword.type === 'password' ? 'Show' : 'Hide';
 }
 
+async function syncPanelInputsToState() {
+  const email = inputEmail.value.trim();
+  const vpsUrl = inputVpsUrl.value.trim();
+  const customPassword = inputPassword.value;
+
+  if (email) {
+    await chrome.runtime.sendMessage({ type: 'SAVE_EMAIL', source: 'sidepanel', payload: { email } });
+  }
+
+  await chrome.runtime.sendMessage({
+    type: 'SAVE_SETTING',
+    source: 'sidepanel',
+    payload: { vpsUrl, customPassword },
+  });
+}
+
 // ============================================================
 // Button Handlers
 // ============================================================
@@ -293,6 +355,8 @@ function syncPasswordToggleLabel() {
 document.querySelectorAll('.step-btn').forEach(btn => {
   btn.addEventListener('click', async () => {
     const step = Number(btn.dataset.step);
+    await syncPanelInputsToState();
+
     if (step === 3) {
       const email = inputEmail.value.trim();
       if (!email) {
@@ -315,8 +379,12 @@ btnTogglePassword.addEventListener('click', () => {
   syncPasswordToggleLabel();
 });
 
+btnToggleVps.addEventListener('click', () => {
+  inputVpsUrl.type = inputVpsUrl.type === 'password' ? 'text' : 'password';
+  syncVpsToggleLabel();
+});
+
 btnStop.addEventListener('click', async () => {
-  btnStop.disabled = true;
   await chrome.runtime.sendMessage({ type: 'STOP_FLOW', source: 'sidepanel', payload: {} });
   showToast('Stopping current flow...', 'warn', 2000);
 });
@@ -324,10 +392,29 @@ btnStop.addEventListener('click', async () => {
 // Auto Run
 btnAutoRun.addEventListener('click', async () => {
   const totalRuns = parseInt(inputRunCount.value) || 1;
+  await syncPanelInputsToState();
   btnAutoRun.disabled = true;
+  btnWorkflowContinue.disabled = true;
   inputRunCount.disabled = true;
   btnAutoRun.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg> Running...';
   await chrome.runtime.sendMessage({ type: 'AUTO_RUN', source: 'sidepanel', payload: { totalRuns } });
+});
+
+btnWorkflowContinue.addEventListener('click', async () => {
+  await syncPanelInputsToState();
+  btnWorkflowContinue.disabled = true;
+  btnAutoRun.disabled = true;
+  inputRunCount.disabled = true;
+  btnAutoRun.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg> Running...';
+
+  const response = await chrome.runtime.sendMessage({ type: 'CONTINUE_AUTO_RUN', source: 'sidepanel', payload: {} });
+  if (response?.error) {
+    showToast(response.error, 'error');
+    btnAutoRun.disabled = false;
+    inputRunCount.disabled = false;
+    btnAutoRun.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg> Auto';
+    await refreshContinueButton();
+  }
 });
 
 btnAutoContinue.addEventListener('click', async () => {
@@ -357,6 +444,7 @@ btnReset.addEventListener('click', async () => {
     displayLocalhostUrl.textContent = 'Waiting...';
     displayLocalhostUrl.classList.remove('has-value');
     inputEmail.value = '';
+    inputVpsUrl.value = DEFAULT_VPS_URL;
     displayStatus.textContent = 'Ready';
     statusBar.className = 'status-bar';
     logArea.innerHTML = '';
@@ -369,6 +457,8 @@ btnReset.addEventListener('click', async () => {
     updateStopButtonState(false);
     updateButtonStates();
     updateProgressCounter();
+    btnWorkflowContinue.disabled = true;
+    syncVpsToggleLabel();
   }
 });
 
@@ -416,7 +506,11 @@ chrome.runtime.onMessage.addListener((message) => {
     case 'STEP_STATUS_CHANGED': {
       const { step, status } = message.payload;
       updateStepUI(step, status);
-      chrome.runtime.sendMessage({ type: 'GET_STATE', source: 'sidepanel' }).then(updateStatusDisplay);
+      chrome.runtime.sendMessage({ type: 'GET_STATE', source: 'sidepanel' }).then((state) => {
+        updateStatusDisplay(state);
+        btnWorkflowContinue.disabled = Boolean(state.autoRunning)
+          || getResumableStepFromStatuses(state.stepStatuses || {}, state.currentStep) === null;
+      });
       if (status === 'completed') {
         chrome.runtime.sendMessage({ type: 'GET_STATE', source: 'sidepanel' }).then(state => {
           syncPasswordField(state);
@@ -449,6 +543,7 @@ chrome.runtime.onMessage.addListener((message) => {
       autoContinueMode = 'email';
       autoContinueHint.textContent = 'Use Auto to fetch a Burner Mailbox email, or paste manually, then continue';
       updateProgressCounter();
+      btnWorkflowContinue.disabled = true;
       break;
     }
 
@@ -479,6 +574,7 @@ chrome.runtime.onMessage.addListener((message) => {
           autoContinueMode = 'email';
           autoContinueHint.textContent = 'Use Auto to fetch a Burner Mailbox email, or paste manually, then continue';
           btnAutoRun.innerHTML = `Paused${runLabel}`;
+          btnWorkflowContinue.disabled = true;
           updateStopButtonState(true);
           break;
         case 'waiting_challenge':
@@ -486,10 +582,12 @@ chrome.runtime.onMessage.addListener((message) => {
           autoContinueMode = 'challenge';
           autoContinueHint.textContent = 'Burner Mailbox 需要先完成人机验证。请在邮箱页完成验证后点击“继续”';
           btnAutoRun.innerHTML = `Paused${runLabel}`;
+          btnWorkflowContinue.disabled = true;
           updateStopButtonState(true);
           break;
         case 'running':
           btnAutoRun.innerHTML = `Running${runLabel}`;
+          btnWorkflowContinue.disabled = true;
           updateStopButtonState(true);
           break;
         case 'complete':
@@ -500,6 +598,7 @@ chrome.runtime.onMessage.addListener((message) => {
           autoContinueMode = 'email';
           autoContinueHint.textContent = 'Use Auto to fetch a Burner Mailbox email, or paste manually, then continue';
           updateStopButtonState(false);
+          refreshContinueButton();
           break;
         case 'stopped':
           btnAutoRun.disabled = false;
@@ -509,6 +608,7 @@ chrome.runtime.onMessage.addListener((message) => {
           autoContinueMode = 'email';
           autoContinueHint.textContent = 'Use Auto to fetch a Burner Mailbox email, or paste manually, then continue';
           updateStopButtonState(false);
+          refreshContinueButton();
           break;
       }
       break;
@@ -548,5 +648,7 @@ btnTheme.addEventListener('click', () => {
 initTheme();
 restoreState().then(() => {
   syncPasswordToggleLabel();
+  syncVpsToggleLabel();
   updateButtonStates();
+  refreshContinueButton();
 });

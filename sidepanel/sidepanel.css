@@ -218,8 +218,37 @@ header {
 }
 .btn-outline:hover { border-color: var(--blue); color: var(--blue); background: var(--blue-soft); }
 
+.btn-workflow-continue {
+  background: linear-gradient(135deg, #f97316 0%, #ea580c 100%);
+  color: #fff;
+  border-color: rgba(234, 88, 12, 0.55);
+  box-shadow: 0 6px 16px rgba(234, 88, 12, 0.22);
+  font-weight: 700;
+}
+
+.btn-workflow-continue:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 8px 20px rgba(234, 88, 12, 0.28);
+}
+
+.btn-workflow-continue:disabled {
+  background: linear-gradient(135deg, #f4b183 0%, #e7a06c 100%);
+  color: rgba(255, 255, 255, 0.92);
+  border-color: rgba(234, 88, 12, 0.18);
+  box-shadow: none;
+  opacity: 0.65;
+  cursor: not-allowed;
+  transform: none;
+}
+
 .btn-sm { padding: 5px 12px; font-size: 12px; }
 .btn-xs { padding: 4px 10px; font-size: 11px; }
+
+.btn-icon {
+  justify-content: center;
+  min-width: 34px;
+  padding-inline: 8px;
+}
 
 /* ============================================================
    Data Card
@@ -305,6 +334,10 @@ header {
   min-width: 58px;
   padding-inline: 10px;
 }
+
+#btn-toggle-vps .icon-eye-off { display: none; }
+#btn-toggle-vps.is-hidden .icon-eye { display: none; }
+#btn-toggle-vps.is-hidden .icon-eye-off { display: block; }
 
 .data-select {
   flex: 1;
@@ -393,6 +426,12 @@ header {
   justify-content: space-between;
   align-items: center;
   margin-bottom: 8px;
+}
+
+.steps-title-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .section-label {

@@ -214,6 +214,7 @@ async function resendVerificationEmail(step, payload = {}) {
     const resendBtn = await waitForResendButton(10000);
     await humanPause(350, 900);
     simulateClick(resendBtn);
+    submitAssociatedForm(resendBtn);
     log(`Step ${step}: Clicked resend email button (${i + 1}/${clicks})`);
     await sleep(700);
   }
@@ -222,7 +223,14 @@ async function resendVerificationEmail(step, payload = {}) {
 }
 
 async function waitForResendButton(timeout = 10000) {
-  const selector = 'button[name="intent"][value="resend"], button[value="resend"], button[type="submit"][name="intent"]';
+  const selector = [
+    'button[name="intent"][value="resend"]',
+    'button[type="submit"][value="resend"]',
+    'button[form][name="intent"][value="resend"]',
+    'input[type="submit"][name="intent"][value="resend"]',
+    'input[type="submit"][value*="resend" i]',
+    'input[type="submit"][value*="重新发送" i]',
+  ].join(', ');
   const start = Date.now();
 
   while (Date.now() - start < timeout) {
@@ -230,12 +238,21 @@ async function waitForResendButton(timeout = 10000) {
 
     const directMatch = Array.from(document.querySelectorAll(selector)).find(btn => {
       const disabled = btn.disabled || btn.getAttribute('aria-disabled') === 'true';
-      return !disabled && isElementVisible(btn);
+      if (disabled || !isElementVisible(btn)) return false;
+      const value = btn.getAttribute('value') || '';
+      const text = btn.textContent || '';
+      const formId = btn.getAttribute('form') || '';
+      return /resend|重新发送/i.test([value, text, formId].join(' '));
     });
     if (directMatch) return directMatch;
 
-    const textMatch = Array.from(document.querySelectorAll('button, [role="button"]')).find(btn => {
-      const text = btn.textContent || '';
+    const textMatch = Array.from(document.querySelectorAll('button, input[type="submit"], [role="button"]')).find(btn => {
+      const text = [
+        btn.textContent || '',
+        btn.getAttribute('value') || '',
+        btn.getAttribute('aria-label') || '',
+        btn.getAttribute('title') || '',
+      ].join(' ');
       const disabled = btn.disabled || btn.getAttribute('aria-disabled') === 'true';
       return !disabled && isElementVisible(btn) && /resend|send again|重新发送电子邮件|重新发送/i.test(text);
     });
@@ -245,6 +262,25 @@ async function waitForResendButton(timeout = 10000) {
   }
 
   throw new Error('Could not find resend email button on verification page. URL: ' + location.href);
+}
+
+function submitAssociatedForm(button) {
+  if (!button) return;
+
+  const formId = button.getAttribute?.('form');
+  const form = button.form || (formId ? document.getElementById(formId) : null);
+  if (!form) return;
+
+  try {
+    if (typeof form.requestSubmit === 'function') {
+      form.requestSubmit(button);
+      return;
+    }
+  } catch {}
+
+  try {
+    form.submit();
+  } catch {}
 }
 
 // ============================================================

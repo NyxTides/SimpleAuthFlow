@@ -21,6 +21,9 @@ const DEFAULT_STATE = {
     1: 'pending', 2: 'pending', 3: 'pending', 4: 'pending', 5: 'pending',
     6: 'pending', 7: 'pending', 8: 'pending', 9: 'pending',
   },
+  autoRunning: false,
+  autoRunCurrentRun: 0,
+  autoRunTotalRuns: 1,
   oauthUrl: null,
   email: null,
   password: null,
@@ -593,8 +596,20 @@ async function handleMessage(message, sender) {
 
     case 'AUTO_RUN': {
       clearStopRequest();
-      const totalRuns = message.payload?.totalRuns || 1;
-      autoRunLoop(totalRuns);  // fire-and-forget
+      const totalRuns = Number(message.payload?.totalRuns) || 1;
+      autoRunLoop(totalRuns, { resumeExisting: false, startStep: 1 });  // fire-and-forget
+      return { ok: true };
+    }
+
+    case 'CONTINUE_AUTO_RUN': {
+      clearStopRequest();
+      const state = await getState();
+      const resumeStep = getAutoResumeStep(state);
+      if (resumeStep === null) {
+        return { error: 'No interrupted workflow to continue.' };
+      }
+      const totalRuns = Math.max(1, Number(state.autoRunTotalRuns) || 1);
+      autoRunLoop(totalRuns, { resumeExisting: true, startStep: resumeStep });  // fire-and-forget
       return { ok: true };
     }
 
@@ -1137,95 +1152,182 @@ let autoRunActive = false;
 let autoRunCurrentRun = 0;
 let autoRunTotalRuns = 1;
 
+function getAutoRunStepDelay(step) {
+  switch (step) {
+    case 1:
+    case 2:
+      return 2000;
+    case 3:
+    case 5:
+    case 6:
+      return 3000;
+    case 4:
+    case 7:
+      return 2000;
+    case 8:
+      return 2000;
+    case 9:
+      return 1000;
+    default:
+      return 2000;
+  }
+}
+
+function getAutoResumeStep(state) {
+  const statuses = state?.stepStatuses || {};
+  const normalizedStatuses = {};
+  for (let step = 1; step <= 9; step++) {
+    normalizedStatuses[step] = statuses[step] || 'pending';
+  }
+
+  const allPending = Object.values(normalizedStatuses).every((status) => status === 'pending');
+  if (allPending) return null;
+
+  const highestCompleted = Object.entries(normalizedStatuses)
+    .filter(([, status]) => status === 'completed')
+    .map(([step]) => Number(step))
+    .sort((a, b) => b - a)[0] || 0;
+
+  if (highestCompleted >= 9) {
+    return null;
+  }
+
+  if (highestCompleted > 0) {
+    return highestCompleted + 1;
+  }
+
+  const currentStep = Number(state?.currentStep) || 0;
+  const currentStatus = currentStep ? normalizedStatuses[currentStep] : null;
+  if (currentStep && ['failed', 'stopped', 'running'].includes(currentStatus)) {
+    return currentStep;
+  }
+
+  for (let step = 1; step <= 9; step++) {
+    if (normalizedStatuses[step] !== 'completed') {
+      return step;
+    }
+  }
+
+  return null;
+}
+
+async function prepareStateForFreshAutoRun(run) {
+  const prevState = await getState();
+  const keepSettings = {
+    vpsUrl: prevState.vpsUrl,
+    customPassword: prevState.customPassword,
+    autoRunning: true,
+    autoRunCurrentRun: run,
+    autoRunTotalRuns,
+  };
+  await resetState();
+  await setState(keepSettings);
+  chrome.runtime.sendMessage({ type: 'AUTO_RUN_RESET' }).catch(() => {});
+  await sleepWithStop(500);
+}
+
+async function ensureAutoRunEmail(run, totalRuns) {
+  let emailReady = false;
+
+  while (!emailReady) {
+    try {
+      const burnerEmail = await fetchBurnerEmail({ generateNew: true });
+      await addLog(`=== Run ${run}/${totalRuns} — Burner email ready: ${burnerEmail} ===`, 'ok');
+      emailReady = true;
+      autoRunResumeMode = null;
+    } catch (err) {
+      if (isBurnerChallengeError(err)) {
+        await waitForBurnerChallengeResolution(`Run ${run}/${totalRuns}`);
+        continue;
+      }
+
+      await addLog(`Burner Mailbox auto-fetch failed: ${err.message}`, 'warn');
+      break;
+    }
+  }
+
+  if (emailReady) return true;
+
+  await addLog(`=== Run ${run}/${totalRuns} PAUSED: Fetch Burner Mailbox email or paste manually, then continue ===`, 'warn');
+  autoRunResumeMode = 'email';
+  chrome.runtime.sendMessage({
+    type: 'AUTO_RUN_STATUS',
+    payload: { phase: 'waiting_email', currentRun: run, totalRuns },
+  }).catch(() => {});
+
+  await waitForResume();
+
+  const resumedState = await getState();
+  if (!resumedState.email) {
+    await addLog('Cannot resume: no email address.', 'error');
+    return false;
+  }
+
+  autoRunResumeMode = null;
+  return true;
+}
+
+async function runAutoSequence(run, totalRuns, startStep) {
+  const status = (phase) => ({ type: 'AUTO_RUN_STATUS', payload: { phase, currentRun: run, totalRuns } });
+  chrome.runtime.sendMessage(status('running')).catch(() => {});
+
+  if (startStep <= 2) {
+    await addLog(`=== Auto Run ${run}/${totalRuns} — Phase 1: Get OAuth link & open signup ===`, 'info');
+  } else {
+    await addLog(`=== Auto Run ${run}/${totalRuns} — Resuming from step ${startStep} ===`, 'info');
+  }
+
+  for (let step = startStep; step <= 9; step++) {
+    if (step === 3) {
+      const stateBeforeEmail = await getState();
+      if (!stateBeforeEmail.email) {
+        const emailReady = await ensureAutoRunEmail(run, totalRuns);
+        if (!emailReady) {
+          throw new Error('Cannot resume auto run: no email address.');
+        }
+      }
+      await addLog(`=== Run ${run}/${totalRuns} — Phase 2: Register, verify, login, complete ===`, 'info');
+      const signupTabId = await getTabId('signup-page');
+      if (signupTabId) {
+        await chrome.tabs.update(signupTabId, { active: true });
+      }
+    }
+
+    await executeStepAndWait(step, getAutoRunStepDelay(step));
+  }
+}
+
 // Outer loop: runs the full flow N times
-async function autoRunLoop(totalRuns) {
+async function autoRunLoop(totalRuns, options = {}) {
   if (autoRunActive) {
     await addLog('Auto run already in progress', 'warn');
     return;
   }
 
+  const { resumeExisting = false, startStep = null } = options;
   clearStopRequest();
   autoRunActive = true;
   autoRunTotalRuns = totalRuns;
   let successfulRuns = 0;
   let failedRun = null;
-  await setState({ autoRunning: true });
+  const initialState = await getState();
+  const startRun = resumeExisting ? Math.max(1, initialState.autoRunCurrentRun || autoRunCurrentRun || 1) : 1;
+  const firstResumeStep = resumeExisting ? (startStep || getAutoResumeStep(initialState) || 1) : 1;
+  successfulRuns = Math.max(0, startRun - 1);
+  await setState({ autoRunning: true, autoRunCurrentRun: startRun, autoRunTotalRuns: totalRuns });
 
-  for (let run = 1; run <= totalRuns; run++) {
+  for (let run = startRun; run <= totalRuns; run++) {
     autoRunCurrentRun = run;
-
-    // Reset everything at the start of each run (keep VPS/password settings)
-    const prevState = await getState();
-    const keepSettings = {
-      vpsUrl: prevState.vpsUrl,
-      customPassword: prevState.customPassword,
-      autoRunning: true,
-    };
-    await resetState();
-    await setState(keepSettings);
-    // Tell side panel to reset all UI
-    chrome.runtime.sendMessage({ type: 'AUTO_RUN_RESET' }).catch(() => {});
-    await sleepWithStop(500);
-
-    await addLog(`=== Auto Run ${run}/${totalRuns} — Phase 1: Get OAuth link & open signup ===`, 'info');
-    const status = (phase) => ({ type: 'AUTO_RUN_STATUS', payload: { phase, currentRun: run, totalRuns } });
+    await setState({ autoRunning: true, autoRunCurrentRun: run, autoRunTotalRuns: totalRuns });
+    const shouldResumeCurrentRun = resumeExisting && run === startRun;
+    const runStartStep = shouldResumeCurrentRun ? firstResumeStep : 1;
+    if (!shouldResumeCurrentRun) {
+      await prepareStateForFreshAutoRun(run);
+    }
 
     try {
       throwIfStopped();
-      chrome.runtime.sendMessage(status('running')).catch(() => {});
-
-      await executeStepAndWait(1, 2000);
-      await executeStepAndWait(2, 2000);
-
-      let emailReady = false;
-      while (!emailReady) {
-        try {
-          const burnerEmail = await fetchBurnerEmail({ generateNew: true });
-          await addLog(`=== Run ${run}/${totalRuns} — Burner email ready: ${burnerEmail} ===`, 'ok');
-          emailReady = true;
-          autoRunResumeMode = null;
-        } catch (err) {
-          if (isBurnerChallengeError(err)) {
-            await waitForBurnerChallengeResolution(`Run ${run}/${totalRuns}`);
-            continue;
-          }
-
-          await addLog(`Burner Mailbox auto-fetch failed: ${err.message}`, 'warn');
-          break;
-        }
-      }
-
-      if (!emailReady) {
-        await addLog(`=== Run ${run}/${totalRuns} PAUSED: Fetch Burner Mailbox email or paste manually, then continue ===`, 'warn');
-        autoRunResumeMode = 'email';
-        chrome.runtime.sendMessage(status('waiting_email')).catch(() => {});
-
-        // Wait for RESUME_AUTO_RUN — sets a promise that resumeAutoRun resolves
-        await waitForResume();
-
-        const resumedState = await getState();
-        if (!resumedState.email) {
-          await addLog('Cannot resume: no email address.', 'error');
-          break;
-        }
-        autoRunResumeMode = null;
-      }
-
-      await addLog(`=== Run ${run}/${totalRuns} — Phase 2: Register, verify, login, complete ===`, 'info');
-      chrome.runtime.sendMessage(status('running')).catch(() => {});
-
-      const signupTabId = await getTabId('signup-page');
-      if (signupTabId) {
-        await chrome.tabs.update(signupTabId, { active: true });
-      }
-
-      await executeStepAndWait(3, 3000);
-      await executeStepAndWait(4, 2000);
-      await executeStepAndWait(5, 3000);
-      await executeStepAndWait(6, 3000);
-      await executeStepAndWait(7, 2000);
-      await executeStepAndWait(8, 2000);
-      await executeStepAndWait(9, 1000);
+      await runAutoSequence(run, totalRuns, runStartStep);
 
       successfulRuns = run;
       await addLog(`=== Run ${run}/${totalRuns} COMPLETE! ===`, 'ok');
@@ -1257,7 +1359,7 @@ async function autoRunLoop(totalRuns) {
     chrome.runtime.sendMessage({ type: 'AUTO_RUN_STATUS', payload: { phase: 'stopped', currentRun: completedRuns, totalRuns: autoRunTotalRuns } }).catch(() => {});
   }
   autoRunActive = false;
-  await setState({ autoRunning: false });
+  await setState({ autoRunning: false, autoRunCurrentRun: autoRunCurrentRun, autoRunTotalRuns: autoRunTotalRuns });
   clearStopRequest();
 }
 
@@ -1393,12 +1495,26 @@ async function requestVerificationEmailResend(step, clicks = 2) {
   }
 
   await chrome.tabs.update(signupTabId, { active: true });
-  await sendToContentScript('signup-page', {
+  const response = await sendToContentScript('signup-page', {
     type: 'RESEND_VERIFICATION_EMAIL',
     step,
     source: 'background',
     payload: { clicks },
   });
+
+  if (response?.error) {
+    throw new Error(response.error);
+  }
+
+  if (response?.stopped) {
+    throw new Error(response.error || STOP_ERROR_MESSAGE);
+  }
+
+  if (!response?.ok && !response?.resent) {
+    throw new Error('Resend email action did not complete.');
+  }
+
+  await addLog(`Step ${step}: Resend email requested successfully (${response.clicks || clicks} clicks)`, 'info');
 }
 
 async function pollVerificationCodeWithRetry(step, state, options) {
