@@ -13,6 +13,16 @@ SimpleAuthFlow 是一个用于简化 ChatGPT OAuth 注册和授权流程的浏�
 不需要你手动准备自己的邮箱，不需要额外填写手机号，也不需要再改一堆插件配置。  
 装好之后就可以直接开始，尽量把使用门槛降到最低。
 
+## 广告
+
+<div align="center">
+  <img width="5728" height="672" alt="6a6a72933750ba319ce43018069e94eb" src="https://github.com/user-attachments/assets/7af9b789-749e-4b00-a683-0abe5494dc75" />
+
+
+[IPWO](https://www.ipwo.net/?ref=githubSimpleAuthFlow)提供覆盖195+国家和地区的住宅代理、静态住宅代理和不限量住宅代理，支持HTTP、HTTPS及SOCKS5协议。
+适用于ChatGPT、Codex、AI Coding、浏览器自动化及多地区网络访问，为开发者提供灵活的住宅网络环境选择。支持免费测试，专属折扣码：`0205`
+</div>
+
 ## 使用前提
 
 本项目的使用前提只有两个：
@@ -62,6 +72,7 @@ SimpleAuthFlow 是一个用于简化 ChatGPT OAuth 注册和授权流程的浏�
 当前这一版属于三次修改版本，在继承前面成果的基础上，继续围绕“个人使用”“开箱即用”“减少配置”做了进一步优化。
 
 当前版本的主要改动包括：
+
 
 ### 1. 去掉原有个人配置依赖
 
